@@ -32,9 +32,6 @@ target 'Runner' do
   use_modular_headers!
 
   flutter_install_all_ios_pods File.dirname(File.realpath(__FILE__))
-  
-  # 音声認識用
-  pod 'speech_to_text', :path => '.symlinks/plugins/speech_to_text/ios'
 end
 
 post_install do |installer|
