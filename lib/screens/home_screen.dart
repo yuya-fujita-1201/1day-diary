@@ -151,26 +151,24 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       );
     }
 
-    // Check microphone permission
-    final hasPermission = await _speechService.isMicrophonePermissionGranted();
+    // Check and request permissions
+    final hasPermission = await _speechService.hasPermissions();
     if (!hasPermission) {
-      final granted = await _speechService.requestMicrophonePermission();
+      final granted = await _speechService.requestPermissions();
       if (!granted) {
         _showPermissionDeniedDialog();
         return;
       }
     }
 
-    // Initialize and start listening
-    final initialized = await _speechService.init();
-    if (!initialized) {
-      _showSnackBar(_speechService.lastError, isError: true);
-      return;
-    }
-
+    // Start listening (will initialize if needed)
     final started = await _speechService.startListening();
     if (!started) {
-      _showSnackBar(_speechService.lastError, isError: true);
+      if (_speechService.status == SpeechStatus.permissionDenied) {
+        _showPermissionDeniedDialog();
+      } else {
+        _showSnackBar(_speechService.lastError, isError: true);
+      }
     }
   }
 

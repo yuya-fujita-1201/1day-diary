@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 import 'package:permission_handler/permission_handler.dart';
@@ -35,33 +36,14 @@ class SpeechService {
   /// Initialize speech recognition
   Future<bool> init() async {
     if (kIsWeb) {
-      // Web speech recognition has limited support
       _status = SpeechStatus.notInitialized;
       _lastError = 'Web platform does not support speech recognition';
       return false;
     }
 
     try {
-      // Check microphone permission
-      final micStatus = await Permission.microphone.status;
-      if (!micStatus.isGranted) {
-        _status = SpeechStatus.permissionDenied;
-        _lastError = 'マイクの使用が許可されていません';
-        return false;
-      }
-
-      // Check speech recognition permission (iOS)
-      final speechStatus = await Permission.speech.status;
-      if (!speechStatus.isGranted && !speechStatus.isLimited) {
-        // Request speech permission
-        final result = await Permission.speech.request();
-        if (!result.isGranted && !result.isLimited) {
-          _status = SpeechStatus.permissionDenied;
-          _lastError = '音声認識の使用が許可されていません';
-          return false;
-        }
-      }
-
+      // speech_to_text will handle permissions internally on iOS
+      // Just initialize it directly
       _isInitialized = await _speech.initialize(
         onStatus: _handleStatus,
         onError: _handleError,
@@ -71,8 +53,8 @@ class SpeechService {
       if (_isInitialized) {
         _status = SpeechStatus.ready;
       } else {
-        _status = SpeechStatus.error;
-        _lastError = '音声認識の初期化に失敗しました';
+        _status = SpeechStatus.permissionDenied;
+        _lastError = '音声認識の権限が許可されていません。設定から許可してください。';
       }
 
       return _isInitialized;
@@ -83,52 +65,78 @@ class SpeechService {
     }
   }
 
-  /// Request microphone permission
-  Future<bool> requestMicrophonePermission() async {
+  /// Request all required permissions for speech recognition
+  Future<bool> requestPermissions() async {
     if (kIsWeb) return false;
 
-    final status = await Permission.microphone.request();
-    
-    if (status.isGranted) {
+    try {
+      // On iOS, we need both microphone and speech recognition permissions
+      if (Platform.isIOS) {
+        // Request microphone first
+        final micStatus = await Permission.microphone.request();
+        if (!micStatus.isGranted) {
+          _lastError = 'マイクの使用が許可されていません';
+          _status = SpeechStatus.permissionDenied;
+          return false;
+        }
+
+        // Request speech recognition
+        final speechStatus = await Permission.speech.request();
+        if (!speechStatus.isGranted && !speechStatus.isLimited) {
+          _lastError = '音声認識の使用が許可されていません';
+          _status = SpeechStatus.permissionDenied;
+          return false;
+        }
+      } else {
+        // Android only needs microphone
+        final micStatus = await Permission.microphone.request();
+        if (!micStatus.isGranted) {
+          _lastError = 'マイクの使用が許可されていません';
+          _status = SpeechStatus.permissionDenied;
+          return false;
+        }
+      }
+
       return true;
-    } else if (status.isPermanentlyDenied) {
-      _lastError = 'マイクの使用が永久に拒否されています。設定アプリから許可してください。';
-      _status = SpeechStatus.permissionDenied;
-      return false;
-    } else {
-      _lastError = 'マイクの使用が拒否されました';
-      _status = SpeechStatus.permissionDenied;
+    } catch (e) {
+      _lastError = '権限の取得に失敗しました: $e';
       return false;
     }
   }
 
-  /// Request speech recognition permission (iOS)
-  Future<bool> requestSpeechPermission() async {
+  /// Check if all required permissions are granted
+  Future<bool> hasPermissions() async {
     if (kIsWeb) return false;
 
-    final status = await Permission.speech.request();
-    
-    if (status.isGranted || status.isLimited) {
+    try {
+      final micGranted = await Permission.microphone.isGranted;
+      if (!micGranted) return false;
+
+      if (Platform.isIOS) {
+        final speechStatus = await Permission.speech.status;
+        return speechStatus.isGranted || speechStatus.isLimited;
+      }
+
       return true;
-    } else if (status.isPermanentlyDenied) {
-      _lastError = '音声認識の使用が永久に拒否されています。設定アプリから許可してください。';
-      return false;
-    } else {
-      _lastError = '音声認識の使用が拒否されました';
+    } catch (e) {
       return false;
     }
-  }
-
-  /// Check if microphone permission is granted
-  Future<bool> isMicrophonePermissionGranted() async {
-    if (kIsWeb) return false;
-    return await Permission.microphone.isGranted;
   }
 
   /// Start listening for speech
   Future<bool> startListening({
     Duration maxDuration = const Duration(seconds: 60),
   }) async {
+    // First check/request permissions
+    final hasPerms = await hasPermissions();
+    if (!hasPerms) {
+      final granted = await requestPermissions();
+      if (!granted) {
+        return false;
+      }
+    }
+
+    // Initialize if needed
     if (!_isInitialized) {
       final initialized = await init();
       if (!initialized) return false;
@@ -156,7 +164,7 @@ class SpeechService {
         },
         listenFor: maxDuration,
         pauseFor: const Duration(seconds: 3),
-        localeId: 'ja-JP', // Japanese locale
+        localeId: 'ja-JP',
         listenOptions: stt.SpeechListenOptions(
           cancelOnError: true,
           partialResults: true,
@@ -242,7 +250,7 @@ class SpeechService {
 音声入力機能について
 
 この機能はデバイスの音声認識サービスを使用します。
-音声データはGoogleの音声認識サービスを通じて処理される場合があります。
+音声データはAppleの音声認識サービスを通じて処理されます。
 
 • 日記の内容はローカルに保存されます
 • 音声データは文字変換後に破棄されます
@@ -251,19 +259,15 @@ class SpeechService {
 続行すると、音声認識サービスの使用に同意したことになります。
 ''';
 
-  /// Check if the device supports speech recognition
-  Future<bool> isSupported() async {
-    if (kIsWeb) return false;
-    
-    if (!_isInitialized) {
-      await init();
-    }
-    
-    return _isInitialized;
-  }
-
   /// Open app settings for permission
   Future<void> openSettings() async {
     await openAppSettings();
+  }
+
+  /// Reset the service (for retry after permission change)
+  void reset() {
+    _isInitialized = false;
+    _status = SpeechStatus.notInitialized;
+    _lastError = '';
   }
 }
